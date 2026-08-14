@@ -13,14 +13,41 @@ const BUBBLES: { left: number; size: number; dur: number; delay: number; drift: 
   { left: 98, size: 10, dur: 18, delay: 14, drift: -14 },
 ]
 
-/** Fixed full-viewport Frutiger Aero backdrop: aurora blobs, sheen and rising bubbles. */
+const SPARKS: { x: number; y: number; delay: number; dur: number }[] = [
+  { x: 8, y: 22, delay: 0, dur: 4.2 },
+  { x: 19, y: 9, delay: 1.4, dur: 5.6 },
+  { x: 31, y: 30, delay: 2.8, dur: 4.8 },
+  { x: 46, y: 12, delay: 0.7, dur: 6.2 },
+  { x: 58, y: 26, delay: 3.5, dur: 4.4 },
+  { x: 69, y: 7, delay: 1.9, dur: 5.2 },
+  { x: 81, y: 19, delay: 4.1, dur: 4.6 },
+  { x: 90, y: 33, delay: 0.3, dur: 5.8 },
+  { x: 37, y: 48, delay: 2.2, dur: 5.0 },
+  { x: 74, y: 44, delay: 3.0, dur: 4.9 },
+]
+
+/** Fixed full-viewport Frutiger Aero backdrop: aurora blobs, sheen, a horizon
+ *  grid, twinkling sparks and rising bubbles. */
 export default function Aurora() {
   return (
     <div className="aurora" aria-hidden="true">
       <div className="aurora-blob aurora-b1" />
       <div className="aurora-blob aurora-b2" />
       <div className="aurora-blob aurora-b3" />
+      <div className="aurora-grid" />
       <div className="aurora-sheen" />
+      {SPARKS.map((s, i) => (
+        <span
+          key={i}
+          className="spark"
+          style={{
+            left: `${s.x}%`,
+            top: `${s.y}%`,
+            animationDelay: `${s.delay}s`,
+            animationDuration: `${s.dur}s`,
+          }}
+        />
+      ))}
       {BUBBLES.map((b, i) => (
         <span
           key={i}

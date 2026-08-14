@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import MonthPicker from '../components/MonthPicker'
+import { api, ApiError } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { saveEvent } from '../lib/store'
 import { localTimezone, timeLabel } from '../lib/time'
 import type { SlotMinutes, StoredEvent } from '../types'
@@ -17,6 +19,7 @@ function randomId(): string {
 
 export default function Create() {
   const navigate = useNavigate()
+  const { status, user } = useAuth()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [dates, setDates] = useState<Set<string>>(new Set())
@@ -24,10 +27,13 @@ export default function Create() {
   const [endMinutes, setEndMinutes] = useState(17 * 60)
   const [slotMinutes, setSlotMinutes] = useState<SlotMinutes>(30)
   const [touched, setTouched] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [serverErr, setServerErr] = useState<string | null>(null)
 
   const problems: string[] = []
   if (name.trim() === '') problems.push('Give the event a name.')
   if (dates.size === 0) problems.push('Pick at least one day.')
+  if (dates.size > 100) problems.push('Pick at most 100 days.')
   if (startMinutes >= endMinutes) problems.push('The end time must be after the start time.')
   else if (endMinutes - startMinutes < slotMinutes)
     problems.push(`That window is shorter than one ${slotMinutes}-minute slot.`)
@@ -43,10 +49,40 @@ export default function Create() {
       ? `Heads up: ${slotMinutes}-minute slots don't fill the window evenly — the last slot will end at ${timeLabel(lastSlotEnd)}.`
       : null
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault()
     setTouched(true)
-    if (problems.length > 0) return
+    // Wait for auth to settle: submitting while /me is in flight would silently
+    // downgrade a signed-in user's event to browser-local.
+    if (problems.length > 0 || busy || status === 'loading') return
+
+    // Primary path: signed in — the event lives on the server, so the invite
+    // link works from any device.
+    if (user) {
+      setBusy(true)
+      setServerErr(null)
+      try {
+        const { event } = await api.createEvent({
+          name: name.trim(),
+          description: description.trim() || undefined,
+          dates: [...dates].sort(),
+          startMinutes,
+          endMinutes,
+          slotMinutes,
+          timezone: localTimezone(),
+        })
+        navigate(`/event/${event.id}`)
+      } catch (err) {
+        setServerErr(
+          err instanceof ApiError ? err.message : 'Could not reach the server — try again.',
+        )
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
+
+    // Guest fallback: browser-local storage.
     const ev: StoredEvent = {
       id: randomId(),
       name: name.trim(),
@@ -68,6 +104,15 @@ export default function Create() {
     <div className="page">
       <form className="glass card" onSubmit={submit}>
         <h1 className="card-title">New event</h1>
+
+        {status === 'ready' && !user && (
+          <div className="callout callout-warn">
+            You're not signed in, so this event will live only in this browser and invitees will
+            send replies back as copy-paste codes.{' '}
+            <Link to="/login?next=/create">Sign in</Link> to put it on the server instead — one
+            link, replies from anywhere.
+          </div>
+        )}
 
         <label className="field">
           <span className="field-label">Event name</span>
@@ -148,7 +193,10 @@ export default function Create() {
         </div>
 
         {unevenNote && <p className="fineprint">{unevenNote}</p>}
-        <p className="fineprint">Times are in your timezone: {localTimezone()}.</p>
+        <p className="fineprint">
+          Times are in your timezone: {localTimezone()}.
+          {user ? ` Saved to ${user.username}'s account.` : ''}
+        </p>
 
         {touched && problems.length > 0 && (
           <div className="callout callout-warn" role="alert">
@@ -157,10 +205,19 @@ export default function Create() {
             ))}
           </div>
         )}
+        {serverErr && (
+          <div className="callout callout-warn" role="alert">
+            {serverErr}
+          </div>
+        )}
 
         <div className="card-actions">
-          <button type="submit" className="btn btn-primary btn-lg">
-            Create event
+          <button
+            type="submit"
+            className="btn btn-primary btn-lg"
+            disabled={busy || status === 'loading'}
+          >
+            {busy ? 'Creating…' : status === 'loading' ? 'One sec…' : 'Create event'}
           </button>
         </div>
       </form>

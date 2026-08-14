@@ -16,11 +16,16 @@ export interface EventDef {
 }
 
 export interface ResponseEntry {
+  /** Local events: lowercased name. Server events: an opaque per-reply id. */
   id: string
   name: string
   /** Slot keys 'YYYY-MM-DDTHH:MM' the person is available for. */
   slots: string[]
   updatedAt: number
+  /** Server events only: whether the reply belongs to an account. */
+  registered?: boolean
+  /** Server events only: whether the reply belongs to the current viewer. */
+  self?: boolean
 }
 
 export interface StoredEvent extends EventDef {

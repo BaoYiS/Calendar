@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import type { EventDef, ResponseEntry } from '../types'
 import { dateLabel, parseSlotKey, slotKey, slotRows, timeLabel } from '../lib/time'
 import { heatColor, heatInk } from '../lib/heat'
+import { addDays, columnShift } from '../lib/tz'
 
 type Cell = [row: number, col: number]
 
@@ -19,6 +20,8 @@ interface TimeGridProps {
   onChange?: (next: Set<string>) => void
   /** Heat mode: everyone's answers. */
   responses?: ResponseEntry[]
+  /** Display timezone; defaults to the event's own zone (no conversion). */
+  viewTz?: string
   maxHeight?: number
 }
 
@@ -54,6 +57,7 @@ export default function TimeGrid({
   value,
   onChange,
   responses = [],
+  viewTz,
   maxHeight = 520,
 }: TimeGridProps) {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -66,6 +70,16 @@ export default function TimeGrid({
   const rows = useMemo(() => slotRows(def), [def])
   const dates = def.dates
   const total = responses.length
+
+  // Per-column minutes to add so labels read in the viewer's chosen zone.
+  const viewZone = viewTz ?? def.timezone
+  const shifts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const d of dates) m.set(d, columnShift(d, def.startMinutes, def.timezone, viewZone))
+    return m
+  }, [dates, def.startMinutes, def.timezone, viewZone])
+  const shift0 = shifts.get(dates[0]) ?? 0
+  const baseDay0 = Math.floor((def.startMinutes + shift0) / 1440)
 
   const availability = useMemo(() => {
     const map = new Map<string, string[]>()
@@ -273,7 +287,8 @@ export default function TimeGrid({
           <div role="row" style={{ display: 'contents' }}>
             <div className="tg-corner" role="columnheader" aria-label="Time" />
             {dates.map((d) => {
-              const l = dateLabel(d)
+              const shift = shifts.get(d) ?? 0
+              const l = dateLabel(addDays(d, Math.floor((def.startMinutes + shift) / 1440)))
               return (
                 <div key={d} className="tg-dayhead" role="columnheader">
                   <span className="tg-dow">{l.dow}</span>
@@ -286,15 +301,19 @@ export default function TimeGrid({
             // Label the first row and every hour after it, so windows starting
             // off the hour (e.g. 9:30 with 60-min slots) still get a time column.
             const labeled = (min - def.startMinutes) % 60 === 0
+            const pastMidnight = Math.floor((min + shift0) / 1440) > baseDay0
             return (
             <div key={min} role="row" style={{ display: 'contents' }}>
               <div className={`tg-time${labeled ? ' tg-hourline' : ''}`} role="rowheader">
-                {labeled ? timeLabel(min, { compact: true }) : ''}
+                {labeled ? timeLabel(min + shift0, { compact: true }) : ''}
+                {labeled && pastMidnight && <span className="tg-plus">+1</span>}
               </div>
               {dates.map((d, c) => {
                 const k = slotKey(d, min)
-                const l = dateLabel(d)
-                const slotLabel = `${l.dow} ${l.md}, ${timeLabel(min)} – ${timeLabel(min + def.slotMinutes)}`
+                const shift = shifts.get(d) ?? 0
+                const cm = min + shift
+                const l = dateLabel(addDays(d, Math.floor(cm / 1440)))
+                const slotLabel = `${l.dow} ${l.md}, ${timeLabel(cm)} – ${timeLabel(cm + def.slotMinutes)}`
                 const isFocused = focused[0] === r && focused[1] === c
                 if (mode === 'paint') {
                   const on = displayed?.has(k) ?? false
@@ -342,7 +361,13 @@ export default function TimeGrid({
         </div>
       </div>
       {tip && mode === 'heat' && (
-        <HeatTip tip={tip} def={def} availability={availability} responses={responses} />
+        <HeatTip
+          tip={tip}
+          def={def}
+          availability={availability}
+          responses={responses}
+          shifts={shifts}
+        />
       )}
     </div>
   )
@@ -353,17 +378,21 @@ function HeatTip({
   def,
   availability,
   responses,
+  shifts,
 }: {
   tip: TipState
   def: EventDef
   availability: Map<string, string[]>
   responses: ResponseEntry[]
+  shifts: Map<string, number>
 }) {
   const { date, minutes } = parseSlotKey(tip.slot)
   const names = availability.get(tip.slot) ?? []
   const nameSet = new Set(names)
   const missing = responses.map((r) => r.name).filter((n) => !nameSet.has(n))
-  const l = dateLabel(date)
+  const shift = shifts.get(date) ?? 0
+  const cm = minutes + shift
+  const l = dateLabel(addDays(date, Math.floor(cm / 1440)))
 
   const width = 240
   const left = Math.max(8, Math.min(tip.x + 14, window.innerWidth - width - 8))
@@ -380,7 +409,7 @@ function HeatTip({
         {names.length} of {responses.length} free
       </div>
       <div className="heattip-when">
-        {l.dow} {l.md} · {timeLabel(minutes)} – {timeLabel(minutes + def.slotMinutes)}
+        {l.dow} {l.md} · {timeLabel(cm)} – {timeLabel(cm + def.slotMinutes)}
       </div>
       {names.length > 0 && (
         <div className="heattip-names">
