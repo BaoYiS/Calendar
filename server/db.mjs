@@ -11,7 +11,9 @@
  *   AQUAPLAN_DB_NAME  database name     (default aquaplan)
  *
  * Document shapes:
- *   users     { _id, username, usernameLower, salt, hash, createdAt }
+ *   users     { _id, username, usernameLower, salt, hash, defaultTimezone?,
+ *               createdAt }   — defaultTimezone: IANA zone captured at signup
+ *               (or first sign-in after the feature shipped), never after
  *   sessions  { _id: token, userId, expiresAt: Date }   — TTL-indexed
  *   events    { _id, name, description?, dates, startMinutes, endMinutes,
  *               slotMinutes, timezone, createdAt, ownerId, responses: [],

@@ -3,6 +3,9 @@ import type { EventDef, ResponseEntry } from '../types'
 export interface ApiUser {
   id: string
   username: string
+  /** IANA zone captured when the account was created (or on the first sign-in
+   *  after the feature shipped); null until then. */
+  defaultTimezone: string | null
 }
 
 /** A server-stored event, as returned by the API. */
@@ -78,11 +81,13 @@ export interface NewEventInput {
 
 export const api = {
   me: () => request<{ user: ApiUser | null }>('GET', '/api/auth/me'),
-  register: (username: string, password: string) =>
-    request<{ user: ApiUser }>('POST', '/api/auth/register', { username, password }),
-  login: (username: string, password: string) =>
-    request<{ user: ApiUser }>('POST', '/api/auth/login', { username, password }),
+  register: (username: string, password: string, timezone: string) =>
+    request<{ user: ApiUser }>('POST', '/api/auth/register', { username, password, timezone }),
+  login: (username: string, password: string, timezone: string) =>
+    request<{ user: ApiUser }>('POST', '/api/auth/login', { username, password, timezone }),
   logout: () => request<{ ok: true }>('POST', '/api/auth/logout'),
+  updateSettings: (settings: { defaultTimezone: string }) =>
+    request<{ user: ApiUser }>('PATCH', '/api/auth/me', settings),
 
   listEvents: () => request<{ events: RemoteEventSummary[] }>('GET', '/api/events'),
   createEvent: (input: NewEventInput) =>

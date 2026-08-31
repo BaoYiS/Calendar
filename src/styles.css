@@ -371,6 +371,12 @@ main {
   white-space: nowrap;
 }
 
+a.userchip:hover,
+a.userchip:focus-visible {
+  background: rgba(90, 210, 255, 0.18);
+  border-color: rgba(140, 225, 255, 0.55);
+}
+
 .userchip-dot {
   width: 8px;
   height: 8px;

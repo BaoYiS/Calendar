@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { api, type ApiUser } from './api'
+import { localTimezone } from './time'
 
 export interface AuthState {
   /** 'loading' until the first /me round-trip settles. */
@@ -56,14 +57,26 @@ export function useAuth(): AuthState {
   return useSyncExternalStore(subscribe, () => state)
 }
 
+// The device zone rides along on both calls: register stores it as the
+// account's defaultTimezone, and login backfills accounts created before
+// that field existed. The server sets it once and never overwrites it.
 export async function login(username: string, password: string): Promise<ApiUser> {
-  const { user } = await api.login(username, password)
+  const { user } = await api.login(username, password, localTimezone())
   setState({ status: 'ready', user })
   return user
 }
 
 export async function register(username: string, password: string): Promise<ApiUser> {
-  const { user } = await api.register(username, password)
+  const { user } = await api.register(username, password, localTimezone())
+  setState({ status: 'ready', user })
+  return user
+}
+
+/** Update account settings and sync the store with the returned user. */
+export async function updateSettings(settings: {
+  defaultTimezone: string
+}): Promise<ApiUser> {
+  const { user } = await api.updateSettings(settings)
   setState({ status: 'ready', user })
   return user
 }

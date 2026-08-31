@@ -121,6 +121,17 @@ function sanitizeName(name) {
   return n === '' ? null : n
 }
 
+/** An IANA zone this Node's ICU accepts, or null. */
+function sanitizeTimezone(tz) {
+  if (typeof tz !== 'string' || tz === '' || tz.length > 64) return null
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return tz
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------- auth utils
 
 async function hashPassword(password, salt) {
@@ -167,7 +178,11 @@ function findUserByName(username) {
 }
 
 function publicUser(user) {
-  return { id: user._id, username: user.username }
+  return {
+    id: user._id,
+    username: user.username,
+    defaultTimezone: user.defaultTimezone ?? null,
+  }
 }
 
 function delay(ms) {
@@ -282,7 +297,7 @@ export function createApp() {
 
   app.post('/api/auth/register', async (req, res) => {
     if (bump(`reg:${req.ip}`, 60_000) > 5) return tooMany(res)
-    const { username, password } = req.body ?? {}
+    const { username, password, timezone } = req.body ?? {}
     if (typeof username !== 'string' || !USERNAME_RE.test(username)) {
       return res
         .status(400)
@@ -305,6 +320,9 @@ export function createApp() {
       usernameLower: username.toLowerCase(),
       salt,
       hash,
+      // Captured once at signup; undefined (field omitted, per ignoreUndefined)
+      // when the client sent nothing valid — login backfills it later.
+      defaultTimezone: sanitizeTimezone(timezone) ?? undefined,
       createdAt: Date.now(),
     }
     try {
@@ -345,6 +363,15 @@ export function createApp() {
       await delay(150 + Math.random() * 200)
       return res.status(401).json({ error: 'Wrong username or password.' })
     }
+    // Accounts from before defaultTimezone existed: capture the device zone on
+    // their next sign-in. Set once — never overwritten by later sign-ins.
+    if (!user.defaultTimezone) {
+      const tz = sanitizeTimezone(req.body?.timezone)
+      if (tz) {
+        user.defaultTimezone = tz
+        await users.updateOne({ _id: user._id }, { $set: { defaultTimezone: tz } })
+      }
+    }
     const token = await createSession(user._id)
     setSessionCookie(res, token, req)
     res.json({ user: publicUser(user) })
@@ -359,6 +386,14 @@ export function createApp() {
 
   app.get('/api/auth/me', (req, res) => {
     res.json({ user: req.user ? publicUser(req.user) : null })
+  })
+
+  app.patch('/api/auth/me', requireAuth, async (req, res) => {
+    if (bump(`settings:${req.user._id}`, 60_000) > 20) return tooMany(res)
+    const tz = sanitizeTimezone(req.body?.defaultTimezone)
+    if (!tz) return res.status(400).json({ error: "That timezone isn't valid." })
+    await users.updateOne({ _id: req.user._id }, { $set: { defaultTimezone: tz } })
+    res.json({ user: publicUser({ ...req.user, defaultTimezone: tz }) })
   })
 
   // ----------------------------------------------------------------- events

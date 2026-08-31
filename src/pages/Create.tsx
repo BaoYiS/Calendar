@@ -6,7 +6,7 @@ import { api, ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { saveEvent } from '../lib/store'
 import { localTimezone, timeLabel } from '../lib/time'
-import { offsetBadge, relationToEvent } from '../lib/tz'
+import { isValidTimezone, offsetBadge, relationToEvent } from '../lib/tz'
 import type { SlotMinutes, StoredEvent } from '../types'
 
 const HALF_HOURS = Array.from({ length: 49 }, (_, i) => i * 30)
@@ -28,10 +28,19 @@ export default function Create() {
   const [startMinutes, setStartMinutes] = useState(9 * 60)
   const [endMinutes, setEndMinutes] = useState(17 * 60)
   const [slotMinutes, setSlotMinutes] = useState<SlotMinutes>(30)
-  const [timezone, setTimezone] = useState(localTimezone)
+  // null = follow homeTz (which can change when auth settles); a string is an
+  // explicit choice for this event and sticks.
+  const [chosenTz, setChosenTz] = useState<string | null>(null)
   const [touched, setTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [serverErr, setServerErr] = useState<string | null>(null)
+
+  // The signed-in user's stored default beats the device zone; guests (and
+  // accounts with no stored default yet) fall back to the device zone.
+  const accountTz =
+    user?.defaultTimezone && isValidTimezone(user.defaultTimezone) ? user.defaultTimezone : null
+  const homeTz = accountTz ?? localTimezone()
+  const timezone = chosenTz ?? homeTz
 
   const problems: string[] = []
   if (name.trim() === '') problems.push('Give the event a name.')
@@ -183,13 +192,13 @@ export default function Create() {
             Timezone
           </label>
           <div className="tzpicker-row">
-            <TimezoneSelect id="create-tz" value={timezone} onChange={setTimezone} />
+            <TimezoneSelect id="create-tz" value={timezone} onChange={setChosenTz} />
             <span className="badge badge-dim tzpicker-offset">{offsetBadge(timezone)}</span>
-            {timezone !== localTimezone() && (
+            {timezone !== homeTz && (
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setTimezone(localTimezone())}
+                onClick={() => setChosenTz(null)}
               >
                 My timezone
               </button>
@@ -216,10 +225,10 @@ export default function Create() {
 
         {unevenNote && <p className="fineprint">{unevenNote}</p>}
         <p className="fineprint">
-          {timezone === localTimezone()
-            ? `Times are in your timezone: ${timezone}.`
-            : `Times are in ${timezone} — your timezone (${localTimezone()}) is ${relationToEvent(
-                localTimezone(),
+          {timezone === homeTz
+            ? `Times are in your ${accountTz ? 'default ' : ''}timezone: ${timezone}.`
+            : `Times are in ${timezone} — your ${accountTz ? 'default ' : ''}timezone (${homeTz}) is ${relationToEvent(
+                homeTz,
                 timezone,
               )}.`}
           {user ? ` Saved to ${user.username}'s account.` : ''}

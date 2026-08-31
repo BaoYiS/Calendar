@@ -6,6 +6,7 @@ import EventPage from './pages/EventPage'
 import Home from './pages/Home'
 import Login from './pages/Login'
 import Respond from './pages/Respond'
+import Settings from './pages/Settings'
 
 function AuthControls() {
   const { status, user } = useAuth()
@@ -14,10 +15,14 @@ function AuthControls() {
     <div className="topbar-auth">
       {user ? (
         <>
-          <span className="userchip" title={`Signed in as ${user.username}`}>
+          <Link
+            to="/settings"
+            className="userchip"
+            title={`Signed in as ${user.username} — settings`}
+          >
             <span className="userchip-dot" aria-hidden="true" />
             {user.username}
-          </span>
+          </Link>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -61,6 +66,7 @@ export default function App() {
             <Route path="/" element={<Home />} />
             <Route path="/create" element={<Create />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="/event/:id" element={<EventPage />} />
             <Route path="/respond/:id" element={<Respond />} />
             <Route path="*" element={<Home />} />
