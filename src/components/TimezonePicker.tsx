@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
 import { localTimezone } from '../lib/time'
-import { listTimezones, offsetBadge, relationToEvent } from '../lib/tz'
+import { offsetBadge, relationToEvent } from '../lib/tz'
+import TimezoneSelect, { zoneLabel } from './TimezoneSelect'
 
 interface TimezonePickerProps {
   eventTz: string
@@ -8,26 +8,7 @@ interface TimezonePickerProps {
   onChange: (tz: string) => void
 }
 
-/** Group IANA zones by region for a scannable optgroup select. */
-function groupZones(zones: string[]): [string, string[]][] {
-  const groups = new Map<string, string[]>()
-  for (const z of zones) {
-    const slash = z.indexOf('/')
-    const region = slash === -1 ? 'Other' : z.slice(0, slash)
-    const arr = groups.get(region)
-    if (arr) arr.push(z)
-    else groups.set(region, [z])
-  }
-  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-}
-
-function zoneLabel(z: string): string {
-  const slash = z.indexOf('/')
-  return (slash === -1 ? z : z.slice(slash + 1)).replace(/_/g, ' ').replace(/\//g, ' – ')
-}
-
 export default function TimezonePicker({ eventTz, value, onChange }: TimezonePickerProps) {
-  const groups = useMemo(() => groupZones(listTimezones()), [])
   const localTz = localTimezone()
 
   return (
@@ -36,22 +17,7 @@ export default function TimezonePicker({ eventTz, value, onChange }: TimezonePic
         <label className="tzpicker-label" htmlFor="tzpicker-select">
           Times shown in
         </label>
-        <select
-          id="tzpicker-select"
-          className="input tzpicker-select"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-        >
-          {groups.map(([region, zones]) => (
-            <optgroup key={region} label={region}>
-              {zones.map((z) => (
-                <option key={z} value={z}>
-                  {zoneLabel(z)}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
+        <TimezoneSelect id="tzpicker-select" value={value} onChange={onChange} />
         <span className="badge badge-dim tzpicker-offset">{offsetBadge(value)}</span>
         {value !== localTz && (
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => onChange(localTz)}>

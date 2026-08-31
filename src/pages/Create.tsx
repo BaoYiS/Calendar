@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import MonthPicker from '../components/MonthPicker'
+import TimezoneSelect from '../components/TimezoneSelect'
 import { api, ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { saveEvent } from '../lib/store'
 import { localTimezone, timeLabel } from '../lib/time'
+import { offsetBadge, relationToEvent } from '../lib/tz'
 import type { SlotMinutes, StoredEvent } from '../types'
 
 const HALF_HOURS = Array.from({ length: 49 }, (_, i) => i * 30)
@@ -26,6 +28,7 @@ export default function Create() {
   const [startMinutes, setStartMinutes] = useState(9 * 60)
   const [endMinutes, setEndMinutes] = useState(17 * 60)
   const [slotMinutes, setSlotMinutes] = useState<SlotMinutes>(30)
+  const [timezone, setTimezone] = useState(localTimezone)
   const [touched, setTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [serverErr, setServerErr] = useState<string | null>(null)
@@ -69,7 +72,7 @@ export default function Create() {
           startMinutes,
           endMinutes,
           slotMinutes,
-          timezone: localTimezone(),
+          timezone,
         })
         navigate(`/event/${event.id}`)
       } catch (err) {
@@ -91,7 +94,7 @@ export default function Create() {
       startMinutes,
       endMinutes,
       slotMinutes,
-      timezone: localTimezone(),
+      timezone,
       createdAt: Date.now(),
       responses: [],
       role: 'organizer',
@@ -176,6 +179,25 @@ export default function Create() {
         </div>
 
         <div className="field">
+          <label className="field-label" htmlFor="create-tz">
+            Timezone
+          </label>
+          <div className="tzpicker-row">
+            <TimezoneSelect id="create-tz" value={timezone} onChange={setTimezone} />
+            <span className="badge badge-dim tzpicker-offset">{offsetBadge(timezone)}</span>
+            {timezone !== localTimezone() && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setTimezone(localTimezone())}
+              >
+                My timezone
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="field">
           <span className="field-label">Slot size</span>
           <div className="segmented" role="group" aria-label="Slot size">
             {([15, 30, 60] as SlotMinutes[]).map((m) => (
@@ -194,7 +216,12 @@ export default function Create() {
 
         {unevenNote && <p className="fineprint">{unevenNote}</p>}
         <p className="fineprint">
-          Times are in your timezone: {localTimezone()}.
+          {timezone === localTimezone()
+            ? `Times are in your timezone: ${timezone}.`
+            : `Times are in ${timezone} — your timezone (${localTimezone()}) is ${relationToEvent(
+                localTimezone(),
+                timezone,
+              )}.`}
           {user ? ` Saved to ${user.username}'s account.` : ''}
         </p>
 
