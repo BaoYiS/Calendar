@@ -2,8 +2,9 @@
  * AquaPlan API — Express app factory shared by the Vite dev server (mounted as
  * middleware) and the production entry (server/index.mjs).
  *
- * Storage is a single JSON file with debounced atomic writes — plenty for a
- * self-hosted scheduling tool, and no native dependencies.
+ * Storage is MongoDB (see server/db.mjs for the connection, document shapes,
+ * and indexes). Point MONGODB_URI at a local mongod or an Atlas cluster; the
+ * legacy JSON store can be imported once with `pnpm migrate:json`.
  *
  * Response identity: internally each reply is keyed 'u:<userId>' (accounts) or
  * 'g:<nameLower>' (guests) for upserts, but the API only ever exposes a random
@@ -12,10 +13,8 @@
  */
 import express from 'express'
 import { randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { ensureIndexes, events, sessions, users } from './db.mjs'
 
 const scrypt = promisify(scryptCb)
 
@@ -25,81 +24,6 @@ const SESSION_REFRESH_MS = 24 * 60 * 60 * 1000
 const MAX_USERS = 1000
 const MAX_RESPONSES_PER_EVENT = 300
 const MAX_IMPORT_RESPONSES = 200
-
-// ---------------------------------------------------------------- persistence
-
-const DATA_DIR =
-  process.env.AQUAPLAN_DATA_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'data')
-const DATA_FILE = path.join(DATA_DIR, 'aquaplan.json')
-
-function emptyDb() {
-  return { users: {}, sessions: {}, events: {}, aliases: {} }
-}
-
-function loadDb() {
-  let parsed = null
-  try {
-    if (existsSync(DATA_FILE)) parsed = JSON.parse(readFileSync(DATA_FILE, 'utf8'))
-  } catch (err) {
-    console.error('[aquaplan] could not read data file, starting empty:', err.message)
-  }
-  const loaded = {
-    users: parsed?.users ?? {},
-    sessions: parsed?.sessions ?? {},
-    events: parsed?.events ?? {},
-    aliases: parsed?.aliases ?? {},
-  }
-  // Migrate any pre-rid response records: move the old public `id` key to the
-  // internal `key`, and give every reply an opaque rid.
-  for (const ev of Object.values(loaded.events)) {
-    for (const r of ev.responses ?? []) {
-      if (r.key === undefined && typeof r.id === 'string') {
-        r.key = r.id
-        delete r.id
-      }
-      if (typeof r.rid !== 'string') r.rid = randomBytes(8).toString('hex')
-    }
-  }
-  // Drop expired sessions eagerly — lazy per-token cleanup never removes
-  // sessions whose cookies are never presented again.
-  const now = Date.now()
-  for (const [token, s] of Object.entries(loaded.sessions)) {
-    if (!s || s.expiresAt <= now) delete loaded.sessions[token]
-  }
-  return loaded
-}
-
-const db = loadDb()
-for (const table of Object.values(db)) Object.setPrototypeOf(table, null)
-
-let saveTimer = null
-function persist() {
-  if (saveTimer) return
-  saveTimer = setTimeout(() => {
-    saveTimer = null
-    try {
-      mkdirSync(DATA_DIR, { recursive: true })
-      const tmp = `${DATA_FILE}.tmp`
-      writeFileSync(tmp, JSON.stringify(db))
-      renameSync(tmp, DATA_FILE)
-    } catch (err) {
-      console.error('[aquaplan] persist failed:', err.message)
-    }
-  }, 200)
-}
-
-const sessionSweep = setInterval(() => {
-  const now = Date.now()
-  let dropped = 0
-  for (const [token, s] of Object.entries(db.sessions)) {
-    if (!s || s.expiresAt <= now) {
-      delete db.sessions[token]
-      dropped++
-    }
-  }
-  if (dropped > 0) persist()
-}, 60 * 60 * 1000)
-sessionSweep.unref?.()
 
 // -------------------------------------------------------------- rate limiting
 
@@ -227,21 +151,23 @@ function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
 }
 
-function createSession(userId) {
+async function createSession(userId) {
   const token = randomBytes(32).toString('hex')
-  db.sessions[token] = { userId, expiresAt: Date.now() + SESSION_TTL_MS }
-  persist()
+  await sessions.insertOne({
+    _id: token,
+    userId,
+    expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+  })
   return token
 }
 
 function findUserByName(username) {
-  if (typeof username !== 'string') return undefined
-  const lower = username.toLowerCase()
-  return Object.values(db.users).find((u) => u.usernameLower === lower)
+  if (typeof username !== 'string') return Promise.resolve(null)
+  return users.findOne({ usernameLower: username.toLowerCase() })
 }
 
 function publicUser(user) {
-  return { id: user.id, username: user.username }
+  return { id: user._id, username: user.username }
 }
 
 function delay(ms) {
@@ -250,10 +176,10 @@ function delay(ms) {
 
 // ---------------------------------------------------------------- responses
 
-/** Resolve an event id, following one level of moved-from alias. */
+/** Resolve an event id — its own id or a moved-from alias it carries. */
 function findEvent(id) {
-  if (typeof id !== 'string') return undefined
-  return db.events[id] ?? (db.aliases[id] ? db.events[db.aliases[id]] : undefined)
+  if (typeof id !== 'string') return Promise.resolve(null)
+  return events.findOne({ $or: [{ _id: id }, { aliases: id }] })
 }
 
 function makeResponse(key, name, slots, userId, rid) {
@@ -271,10 +197,10 @@ function makeResponse(key, name, slots, userId, rid) {
  * Public projection of an event. Replies expose only the opaque rid, display
  * name, slots, and two safe flags — never userId or the internal u:/g: key.
  */
-function eventPayload(ev, user) {
-  const owner = db.users[ev.ownerId]
+async function eventPayload(ev, user) {
+  const owner = await users.findOne({ _id: ev.ownerId })
   return {
-    id: ev.id,
+    id: ev._id,
     name: ev.name,
     description: ev.description,
     dates: ev.dates,
@@ -284,14 +210,14 @@ function eventPayload(ev, user) {
     timezone: ev.timezone,
     createdAt: ev.createdAt,
     ownerName: owner ? owner.username : 'unknown',
-    mine: !!user && ev.ownerId === user.id,
+    mine: !!user && ev.ownerId === user._id,
     responses: ev.responses.map((r) => ({
       id: r.rid,
       name: r.name,
       slots: r.slots,
       updatedAt: r.updatedAt,
       registered: !!r.userId,
-      self: !!user && !!r.userId && r.userId === user.id,
+      self: !!user && !!r.userId && r.userId === user._id,
     })),
   }
 }
@@ -321,24 +247,27 @@ export function createApp() {
     next()
   })
 
-  // Resolve the session user (sliding expiry).
-  app.use((req, res, next) => {
+  // Resolve the session user (sliding expiry). Scoped to /api so static asset
+  // requests never touch the database.
+  app.use('/api', async (req, res, next) => {
+    await ensureIndexes()
     req.user = null
     const token = getCookie(req, SESSION_COOKIE)
     if (token && /^[a-f0-9]{64}$/.test(token)) {
-      const session = db.sessions[token]
-      if (session && session.expiresAt > Date.now()) {
-        const user = db.users[session.userId]
+      const session = await sessions.findOne({ _id: token })
+      if (session && session.expiresAt > new Date()) {
+        const user = await users.findOne({ _id: session.userId })
         if (user) {
           req.user = user
           if (session.expiresAt - Date.now() < SESSION_TTL_MS - SESSION_REFRESH_MS) {
-            session.expiresAt = Date.now() + SESSION_TTL_MS
-            persist()
+            await sessions.updateOne(
+              { _id: token },
+              { $set: { expiresAt: new Date(Date.now() + SESSION_TTL_MS) } },
+            )
           }
         }
       } else if (session) {
-        delete db.sessions[token]
-        persist()
+        await sessions.deleteOne({ _id: token })
       }
     }
     next()
@@ -362,29 +291,33 @@ export function createApp() {
     if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
       return res.status(400).json({ error: 'Password must be at least 8 characters.' })
     }
-    if (Object.keys(db.users).length >= MAX_USERS) {
+    if ((await users.estimatedDocumentCount()) >= MAX_USERS) {
       return res.status(503).json({ error: 'Registration is full on this server.' })
     }
-    if (findUserByName(username)) {
+    if (await findUserByName(username)) {
       return res.status(409).json({ error: 'That username is taken.' })
     }
     const salt = randomBytes(16).toString('hex')
     const hash = await hashPassword(password, salt)
-    // Re-check after the await: a concurrent register for the same name could
-    // have landed while scrypt was running.
-    if (findUserByName(username)) {
-      return res.status(409).json({ error: 'That username is taken.' })
-    }
     const user = {
-      id: randomBytes(8).toString('hex'),
+      _id: randomBytes(8).toString('hex'),
       username,
       usernameLower: username.toLowerCase(),
       salt,
       hash,
       createdAt: Date.now(),
     }
-    db.users[user.id] = user
-    const token = createSession(user.id)
+    try {
+      await users.insertOne(user)
+    } catch (err) {
+      // The unique index on usernameLower settles the race with a concurrent
+      // register for the same name that landed while scrypt was running.
+      if (err?.code === 11000) {
+        return res.status(409).json({ error: 'That username is taken.' })
+      }
+      throw err
+    }
+    const token = await createSession(user._id)
     setSessionCookie(res, token, req)
     res.json({ user: publicUser(user) })
   })
@@ -397,7 +330,7 @@ export function createApp() {
     if (countOf(failKey) >= 5) {
       return tooMany(res, 'Too many failed attempts for this account — wait a few minutes.')
     }
-    const user = findUserByName(username)
+    const user = await findUserByName(username)
     if (!user || typeof password !== 'string') {
       bump(failKey, 5 * 60_000)
       await delay(150 + Math.random() * 200)
@@ -412,17 +345,14 @@ export function createApp() {
       await delay(150 + Math.random() * 200)
       return res.status(401).json({ error: 'Wrong username or password.' })
     }
-    const token = createSession(user.id)
+    const token = await createSession(user._id)
     setSessionCookie(res, token, req)
     res.json({ user: publicUser(user) })
   })
 
-  app.post('/api/auth/logout', (req, res) => {
+  app.post('/api/auth/logout', async (req, res) => {
     const token = getCookie(req, SESSION_COOKIE)
-    if (token && db.sessions[token]) {
-      delete db.sessions[token]
-      persist()
-    }
+    if (token) await sessions.deleteOne({ _id: token })
     clearSessionCookie(res)
     res.json({ ok: true })
   })
@@ -433,14 +363,14 @@ export function createApp() {
 
   // ----------------------------------------------------------------- events
 
-  app.get('/api/events', requireAuth, (req, res) => {
-    const mine = Object.values(db.events)
-      .filter(
-        (ev) => ev.ownerId === req.user.id || ev.responses.some((r) => r.userId === req.user.id),
-      )
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .map((ev) => ({
-        id: ev.id,
+  app.get('/api/events', requireAuth, async (req, res) => {
+    const mine = await events
+      .find({ $or: [{ ownerId: req.user._id }, { 'responses.userId': req.user._id }] })
+      .sort({ createdAt: -1 })
+      .toArray()
+    res.json({
+      events: mine.map((ev) => ({
+        id: ev._id,
         name: ev.name,
         dates: ev.dates,
         startMinutes: ev.startMinutes,
@@ -448,22 +378,24 @@ export function createApp() {
         slotMinutes: ev.slotMinutes,
         timezone: ev.timezone,
         createdAt: ev.createdAt,
-        mine: ev.ownerId === req.user.id,
+        mine: ev.ownerId === req.user._id,
         replyCount: ev.responses.length,
-      }))
-    res.json({ events: mine })
+      })),
+    })
   })
 
-  app.post('/api/events', requireAuth, (req, res) => {
-    if (bump(`create:${req.user.id}`, 60_000) > 20) return tooMany(res)
+  app.post('/api/events', requireAuth, async (req, res) => {
+    if (bump(`create:${req.user._id}`, 60_000) > 20) return tooMany(res)
     const def = sanitizeEventDef(req.body)
     if (!def) return res.status(400).json({ error: "That event definition isn't valid." })
     const ev = {
       ...def,
-      id: randomBytes(5).toString('hex'),
+      _id: randomBytes(5).toString('hex'),
       createdAt: Date.now(),
-      ownerId: req.user.id,
+      ownerId: req.user._id,
       responses: [],
+      aliases: [],
+      rev: 0,
     }
     // Optional import of replies (used by "move this browser event to my
     // account"). Oversized imports fail loudly — silently dropping replies
@@ -482,39 +414,51 @@ export function createApp() {
         }
         // The creator's own reply stays attached to their account.
         const isCreator = name.toLowerCase() === req.user.usernameLower
-        const key = isCreator ? `u:${req.user.id}` : `g:${name.toLowerCase()}`
+        const key = isCreator ? `u:${req.user._id}` : `g:${name.toLowerCase()}`
         if (!ev.responses.some((existing) => existing.key === key)) {
-          ev.responses.push(makeResponse(key, name, slots, isCreator ? req.user.id : null))
+          ev.responses.push(makeResponse(key, name, slots, isCreator ? req.user._id : null))
         }
       }
     }
     // Keep old share links working when a browser event moves to the server.
     const movedFrom = req.body.movedFrom
-    if (typeof movedFrom === 'string' && ID_RE.test(movedFrom) && !db.events[movedFrom]) {
-      db.aliases[movedFrom] = ev.id
+    if (
+      typeof movedFrom === 'string' &&
+      ID_RE.test(movedFrom) &&
+      !(await events.findOne({ _id: movedFrom }))
+    ) {
+      ev.aliases.push(movedFrom)
     }
-    db.events[ev.id] = ev
-    persist()
-    res.json({ event: eventPayload(ev, req.user) })
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await events.insertOne(ev)
+        break
+      } catch (err) {
+        // A 40-bit id collision is nearly impossible — but retrying is free.
+        if (err?.code === 11000 && attempt < 3) {
+          ev._id = randomBytes(5).toString('hex')
+          continue
+        }
+        throw err
+      }
+    }
+    res.json({ event: await eventPayload(ev, req.user) })
   })
 
-  app.get('/api/events/:id', (req, res) => {
-    const ev = findEvent(req.params.id)
+  app.get('/api/events/:id', async (req, res) => {
+    const ev = await findEvent(req.params.id)
     if (!ev) return res.status(404).json({ error: 'No such event.' })
-    res.json({ event: eventPayload(ev, req.user) })
+    res.json({ event: await eventPayload(ev, req.user) })
   })
 
-  app.delete('/api/events/:id', requireAuth, (req, res) => {
-    const ev = findEvent(req.params.id)
+  app.delete('/api/events/:id', requireAuth, async (req, res) => {
+    const ev = await findEvent(req.params.id)
     if (!ev) return res.status(404).json({ error: 'No such event.' })
-    if (ev.ownerId !== req.user.id) {
+    if (ev.ownerId !== req.user._id) {
       return res.status(403).json({ error: 'Only the organizer can delete an event.' })
     }
-    delete db.events[ev.id]
-    for (const [oldId, target] of Object.entries(db.aliases)) {
-      if (target === ev.id) delete db.aliases[oldId]
-    }
-    persist()
+    // Aliases live on the event doc, so they disappear with it.
+    await events.deleteOne({ _id: ev._id })
     res.json({ ok: true })
   })
 
@@ -524,57 +468,93 @@ export function createApp() {
    * overwrite an account holder's reply. When a signed-in user saves, any
    * guest reply under the same name is absorbed (they're claiming their own
    * earlier guest reply — and any guest could already overwrite that entry).
+   *
+   * The replies array is recomputed from a snapshot and written back guarded
+   * by `rev`, so two concurrent savers can't overwrite each other's reply —
+   * the loser of the race just retries on a fresh snapshot.
    */
-  app.put('/api/events/:id/responses', (req, res) => {
+  app.put('/api/events/:id/responses', async (req, res) => {
     if (bump(`resp:${req.ip}`, 60_000) > 30) return tooMany(res)
-    const ev = findEvent(req.params.id)
-    if (!ev) return res.status(404).json({ error: 'No such event.' })
-    // The client sends the account it believes it's signed in as; if the
-    // session died meanwhile, fail instead of silently writing a guest reply.
-    const asUser = req.body?.asUser
-    if (asUser !== undefined && (!req.user || req.user.id !== asUser)) {
-      return res.status(401).json({ error: 'Your session has ended — sign in again.' })
-    }
-    const name = sanitizeName(req.body?.name) ?? (req.user ? req.user.username : null)
-    if (!name) return res.status(400).json({ error: 'A name is required.' })
-    const slots = sanitizeSlots(ev, req.body?.slots)
-    if (slots === null) return res.status(400).json({ error: "Those slots aren't valid." })
-
-    const key = req.user ? `u:${req.user.id}` : `g:${name.toLowerCase()}`
-    if (req.user) {
-      ev.responses = ev.responses.filter((r) => r.key !== `g:${name.toLowerCase()}`)
-    }
-    const idx = ev.responses.findIndex((r) => r.key === key)
-    if (idx === -1) {
-      if (ev.responses.length >= MAX_RESPONSES_PER_EVENT) {
-        return tooMany(res, 'This event has reached its reply limit.')
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const ev = await findEvent(req.params.id)
+      if (!ev) return res.status(404).json({ error: 'No such event.' })
+      // The client sends the account it believes it's signed in as; if the
+      // session died meanwhile, fail instead of silently writing a guest reply.
+      const asUser = req.body?.asUser
+      if (asUser !== undefined && (!req.user || req.user._id !== asUser)) {
+        return res.status(401).json({ error: 'Your session has ended — sign in again.' })
       }
-      ev.responses.push(makeResponse(key, name, slots, req.user ? req.user.id : null))
-    } else {
-      ev.responses[idx] = makeResponse(key, name, slots, req.user ? req.user.id : null, ev.responses[idx].rid)
+      const name = sanitizeName(req.body?.name) ?? (req.user ? req.user.username : null)
+      if (!name) return res.status(400).json({ error: 'A name is required.' })
+      const slots = sanitizeSlots(ev, req.body?.slots)
+      if (slots === null) return res.status(400).json({ error: "Those slots aren't valid." })
+
+      const key = req.user ? `u:${req.user._id}` : `g:${name.toLowerCase()}`
+      let responses = req.user
+        ? ev.responses.filter((r) => r.key !== `g:${name.toLowerCase()}`)
+        : [...ev.responses]
+      const idx = responses.findIndex((r) => r.key === key)
+      if (idx === -1) {
+        if (responses.length >= MAX_RESPONSES_PER_EVENT) {
+          return tooMany(res, 'This event has reached its reply limit.')
+        }
+        responses.push(makeResponse(key, name, slots, req.user ? req.user._id : null))
+      } else {
+        responses[idx] = makeResponse(
+          key,
+          name,
+          slots,
+          req.user ? req.user._id : null,
+          responses[idx].rid,
+        )
+      }
+      const result = await events.updateOne(
+        { _id: ev._id, rev: ev.rev ?? null },
+        { $set: { responses }, $inc: { rev: 1 } },
+      )
+      if (result.matchedCount === 1) {
+        const saved = responses.find((r) => r.key === key)
+        return res.json({
+          event: await eventPayload({ ...ev, responses }, req.user),
+          responseId: saved.rid,
+        })
+      }
+      // Someone else's write landed between our read and write — retry.
     }
-    persist()
-    const saved = ev.responses.find((r) => r.key === key)
-    res.json({ event: eventPayload(ev, req.user), responseId: saved.rid })
+    res.status(503).json({ error: 'The event is busy — try again.' })
   })
 
-  app.delete('/api/events/:id/responses/:rid', requireAuth, (req, res) => {
-    const ev = findEvent(req.params.id)
+  app.delete('/api/events/:id/responses/:rid', requireAuth, async (req, res) => {
+    const ev = await findEvent(req.params.id)
     if (!ev) return res.status(404).json({ error: 'No such event.' })
     const found = ev.responses.find((r) => r.rid === req.params.rid)
     if (!found) return res.status(404).json({ error: 'No such reply.' })
-    const isOwner = ev.ownerId === req.user.id
-    const isSelf = found.userId === req.user.id
+    const isOwner = ev.ownerId === req.user._id
+    const isSelf = found.userId === req.user._id
     if (!isOwner && !isSelf) {
       return res.status(403).json({ error: "You can't remove someone else's reply." })
     }
-    ev.responses = ev.responses.filter((r) => r.rid !== req.params.rid)
-    persist()
-    res.json({ event: eventPayload(ev, req.user) })
+    // $pull is atomic per-rid, so no rev guard is needed; bump rev anyway so
+    // a concurrent reply upsert sees the change and retries.
+    const updated = await events.findOneAndUpdate(
+      { _id: ev._id },
+      { $pull: { responses: { rid: req.params.rid } }, $inc: { rev: 1 } },
+      { returnDocument: 'after' },
+    )
+    if (!updated) return res.status(404).json({ error: 'No such event.' })
+    res.json({ event: await eventPayload(updated, req.user) })
   })
 
   app.use('/api', (req, res) => {
     res.status(404).json({ error: 'No such endpoint.' })
+  })
+
+  // Async handler failures (e.g. the database is unreachable) end up here;
+  // answer API callers in JSON instead of Express's HTML error page.
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err)
+    console.error('[aquaplan]', err)
+    res.status(500).json({ error: 'Server error — try again.' })
   })
 
   return app

@@ -19,8 +19,28 @@ pnpm start      # production server (dist/ + API) on http://localhost:8787
 ```
 
 The API is an Express app (`server/app.mjs`) mounted straight into Vite's dev
-server, so `pnpm dev` is all you need. Data persists to
-`server/data/aquaplan.json` (gitignored).
+server. Data lives in MongoDB: the server reads `MONGODB_URI` from the
+environment or a project-root `.env` (gitignored; shell variables win), and
+defaults to `mongodb://127.0.0.1:27017`. Database name comes from
+`AQUAPLAN_DB_NAME` (default `aquaplan`).
+
+```bash
+# .env — point the app at a MongoDB Atlas cluster
+MONGODB_URI="mongodb+srv://user:pass@cluster.xxxxx.mongodb.net"
+```
+
+No cluster? A local Docker container works fine — with no `MONGODB_URI` set,
+the app connects to it out of the box:
+
+```bash
+docker run -d --name aquaplan-mongo --restart unless-stopped \
+  -p 27017:27017 -v aquaplan-mongo-data:/data/db mongo:8
+```
+
+Upgrading from the old JSON-file storage? Import it once with
+`pnpm migrate:json` (reads `server/data/aquaplan.json`, targets whatever
+`MONGODB_URI` resolves to, safe to re-run; the file is left untouched and no
+longer used).
 
 ## Accounts — the primary flow
 
@@ -59,9 +79,11 @@ account"** that recreates a browser event on the server, replies included.
 
 ```
 server/
-  app.mjs     Express API: auth (scrypt + cookie sessions), events, responses;
-              JSON-file persistence with atomic debounced writes
-  index.mjs   production entry: serves dist/ + the API
+  app.mjs          Express API: auth (scrypt + cookie sessions), events,
+                   responses
+  db.mjs           MongoDB connection, document shapes, indexes
+  migrate-json.mjs one-time import of the legacy JSON store
+  index.mjs        production entry: serves dist/ + the API
 src/
   lib/        time math, share-link + response-code codecs, localStorage store,
               API client, auth store, remote-event hook, best-times analysis,

@@ -3,14 +3,19 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "start": "node server/index.mjs"
+    "start": "node server/index.mjs",
+    "migrate:json": "node server/migrate-json.mjs"
   },
   "dependencies": {
     "express": "^5.2.1",
+    "mongodb": "^7.6.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.6.0"
