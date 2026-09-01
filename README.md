@@ -63,13 +63,25 @@ account"** that recreates a browser event on the server, replies included.
 
 ## How it works
 
-- **Create** — name the event, pick days on a calendar (click or drag), choose a
-  daily time window and slot size (15/30/60 min).
+- **Create** — name the event, pick a mode, pick days on a calendar (click or
+  drag), choose a daily time window and slot size (15/30/60 min).
+- **Modes** — three ways to combine replies, chosen at the top of the form:
+  - *Mutually available* (default) — find overlap: everyone paints when
+    they're free and the best group times surface.
+  - *Mutually exclusive* — each slot belongs to at most one person (sign-ups,
+    shifts, 1-on-1s): taken slots are greyed out for later responders, the
+    server rejects racing claims, and the results show one colour per person
+    with any double-claims (possible via imported guest codes) flagged in red.
+  - *Schedule planning* — invitees pick whatever times suit them (overlaps
+    fine); the organizer sees everyone's picks side by side and plans around
+    them.
 - **Respond** — invitees paint their free slots on a drag-to-paint grid
   (rectangle selection, keyboard accessible).
 - **Decide** — the organizer sees a sequential-aqua heatmap (brighter = more
   people free), per-slot tooltips with who's free/busy, and a ranked
-  "Best times" list that merges consecutive slots with the same group.
+  "Best times" list that merges consecutive slots with the same group — or, in
+  the exclusive/schedule modes, a colour-per-person grid plus a per-person
+  breakdown of claimed/picked time ranges.
 - **Timezones** — a picker on the event and respond pages converts every
   displayed time (grid, tooltips, chips, best times) into any IANA zone,
   DST-correct via `Intl`, with `+1` markers where a window rolls past

@@ -1,4 +1,4 @@
-import type { EventDef, ResponseEntry } from '../types'
+import type { EventDef, EventMode, ResponseEntry } from '../types'
 
 export interface ApiUser {
   id: string
@@ -18,6 +18,7 @@ export interface RemoteEvent extends EventDef {
 export interface RemoteEventSummary {
   id: string
   name: string
+  mode: EventMode
   dates: string[]
   startMinutes: number
   endMinutes: number
@@ -68,6 +69,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
 export interface NewEventInput {
   name: string
   description?: string
+  mode: EventMode
   dates: string[]
   startMinutes: number
   endMinutes: number

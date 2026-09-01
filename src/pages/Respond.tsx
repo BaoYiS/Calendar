@@ -5,11 +5,13 @@ import TimeGrid from '../components/TimeGrid'
 import TimezonePicker from '../components/TimezonePicker'
 import { ApiError, api } from '../lib/api'
 import { refreshAuth, useAuth } from '../lib/auth'
+import { eventMode, MODE_COPY } from '../lib/modes'
 import { useRemoteEvent } from '../lib/remote'
 import { decodeEventDef, encodeResponse } from '../lib/share'
 import { importEventDef, upsertResponse, useEvents } from '../lib/store'
 import { datesSummary, slotKey, slotRows } from '../lib/time'
 import { columnShift, shiftedRange, useViewTimezone } from '../lib/tz'
+import type { ResponseEntry } from '../types'
 
 export default function Respond() {
   const { id = '' } = useParams()
@@ -68,6 +70,37 @@ export default function Respond() {
   // saving absorbs it into the account (the server removes the guest entry).
   const claimable = isRemote && user && !existing ? guestMatch : undefined
 
+  const evMode = ev ? eventMode(ev) : 'overlap'
+  const copy = MODE_COPY[evMode]
+  const exclusive = evMode === 'exclusive'
+
+  /** Replies that count as "mine" — same rules the existing/claimable match uses. */
+  function ownReplyIds(rs: ResponseEntry[]): Set<string> {
+    const ids = new Set<string>()
+    for (const r of rs) {
+      const guestNameMatch = !r.registered && r.name.trim().toLowerCase() === nameKey
+      const own = isRemote ? (user ? !!r.self || guestNameMatch : guestNameMatch) : r.id === nameKey
+      if (own) ids.add(r.id)
+    }
+    return ids
+  }
+
+  // Mutually-exclusive events: slots other people hold are off-limits.
+  const takenBy = useMemo(() => {
+    const map = new Map<string, string[]>()
+    if (!ev || !exclusive) return map
+    const own = ownReplyIds(ev.responses)
+    for (const r of ev.responses) {
+      if (own.has(r.id)) continue
+      for (const s of r.slots) {
+        const arr = map.get(s)
+        if (arr) arr.push(r.name)
+        else map.set(s, [r.name])
+      }
+    }
+    return map
+  }, [ev, exclusive, nameKey, user, isRemote])
+
   // When the identity matches a saved reply, load it — but never clobber
   // in-progress painting.
   useEffect(() => {
@@ -86,6 +119,12 @@ export default function Respond() {
     for (const d of ev.dates) for (const m of rows) all.add(slotKey(d, m))
     return all
   }, [ev])
+
+  // What "Select all" may grab — everything except other people's slots.
+  const selectableSlots = useMemo(() => {
+    if (takenBy.size === 0) return allSlots
+    return new Set([...allSlots].filter((s) => !takenBy.has(s)))
+  }, [allSlots, takenBy])
 
   // A valid ?d= payload is about to be imported by the effect above — render
   // the loading state for that frame instead of flashing the not-found card.
@@ -132,6 +171,17 @@ export default function Respond() {
 
   async function save() {
     if (!ev || busy) return
+    // Exclusive events: catch stale picks before they leave this device (the
+    // server re-checks for remote events; local events have no other referee).
+    if (exclusive) {
+      const clashes = [...slots].filter((s) => takenBy.has(s))
+      if (clashes.length > 0) {
+        setSaveErr(
+          `${clashes.length === 1 ? 'One of your marked times is' : `${clashes.length} of your marked times are`} already taken — unmark the greyed-out slots and save again.`,
+        )
+        return
+      }
+    }
     if (isRemote) {
       setBusy(true)
       setSaveErr(null)
@@ -149,6 +199,27 @@ export default function Respond() {
           setSaveErr(
             'Your session has ended, so nothing was saved. Sign in again to reply from your account — or just save again to reply as a guest.',
           )
+        } else if (err instanceof ApiError && err.status === 409 && exclusive) {
+          // Someone claimed slots between our load and save. Fetch the fresh
+          // event, unmark what's now theirs, and let the user re-save.
+          try {
+            const { event } = await api.getEvent(ev.id)
+            const own = ownReplyIds(event.responses)
+            const taken = new Set<string>()
+            for (const r of event.responses) {
+              if (!own.has(r.id)) for (const s of r.slots) taken.add(s)
+            }
+            const keep = [...slots].filter((s) => !taken.has(s))
+            const dropped = slots.size - keep.length
+            setSlots(new Set(keep))
+            dirty.current = true
+            refresh()
+            setSaveErr(
+              `${err.message}${dropped > 0 ? ` ${dropped === 1 ? 'That time has' : 'Those times have'} been unmarked — review and save again.` : ' Refresh and try again.'}`,
+            )
+          } catch {
+            setSaveErr(err.message)
+          }
         } else {
           setSaveErr(err instanceof ApiError ? err.message : 'Could not reach the server — try again.')
         }
@@ -178,6 +249,7 @@ export default function Respond() {
         </div>
         {ev.description && <p className="muted">{ev.description}</p>}
         <div className="chips">
+          {evMode !== 'overlap' && <span className="chip">{copy.label.toLowerCase()}</span>}
           <span className="chip">{datesSummary(ev.dates)}</span>
           <span className="chip">
             {(() => {
@@ -238,10 +310,14 @@ export default function Respond() {
 
         <div className="paint-toolbar">
           <span className="paint-hint">
-            Click or drag to paint the times you're free · {slots.size} slot{slots.size === 1 ? '' : 's'} marked
+            Click or drag to {copy.paintHint} · {slots.size} slot{slots.size === 1 ? '' : 's'} marked
           </span>
           <div className="paint-actions">
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => paint(new Set(allSlots))}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => paint(new Set(selectableSlots))}
+            >
               Select all
             </button>
             <button
@@ -257,7 +333,14 @@ export default function Respond() {
           </div>
         </div>
 
-        <TimeGrid def={ev} mode="paint" value={slots} onChange={paint} viewTz={viewTz} />
+        <TimeGrid
+          def={ev}
+          mode="paint"
+          value={slots}
+          onChange={paint}
+          takenBy={exclusive ? takenBy : undefined}
+          viewTz={viewTz}
+        />
 
         {saveErr && (
           <div className="callout callout-warn" role="alert">
@@ -275,8 +358,8 @@ export default function Respond() {
             {busy
               ? 'Saving…'
               : existing || claimable
-                ? 'Update my availability'
-                : 'Save my availability'}
+                ? `Update my ${copy.noun}`
+                : `Save my ${copy.noun}`}
           </button>
           {!canSave && <span className="fineprint">Add your name to save.</span>}
         </div>
@@ -286,12 +369,12 @@ export default function Respond() {
         <section className="glass card callout-ok-card" role="status">
           <h2 className="card-title">Saved ✓</h2>
           <p className="muted">
-            Your availability is saved to the event — the organizer and everyone else can see it
+            Your reply is saved to the event — the organizer and everyone else can see it
             immediately. No codes, nothing to send.
           </p>
           <div className="card-actions">
             <Link to={`/event/${ev.id}`} className="btn btn-mint">
-              See the group heatmap
+              {copy.resultsCta}
             </Link>
           </div>
         </section>
@@ -301,14 +384,14 @@ export default function Respond() {
         <section className="glass card callout-ok-card" role="status">
           <h2 className="card-title">Saved ✓</h2>
           <p className="muted">
-            Your availability is stored in this browser and already counts toward the results
-            here. <strong>Filling this in on your own device?</strong> Send the organizer this
+            Your reply is stored in this browser and already counts toward the results here.{' '}
+            <strong>Filling this in on your own device?</strong> Send the organizer this
             response code so they can import it into their results:
           </p>
           <CopyField value={savedCode} label="Response code" />
           <div className="card-actions">
             <Link to={`/event/${ev.id}`} className="btn btn-mint">
-              See the group heatmap
+              {copy.resultsCta}
             </Link>
           </div>
         </section>

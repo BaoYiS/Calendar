@@ -708,6 +708,16 @@ select.input {
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
+/* Wider segmented groups (e.g. the three event modes) wrap on small screens. */
+.segmented-wrap {
+  flex-wrap: wrap;
+  border-radius: 22px;
+}
+
+.mode-blurb {
+  max-width: 62ch;
+}
+
 /* ---------- chips, badges, callouts ---------- */
 
 .chips {
@@ -1282,6 +1292,43 @@ select.input {
   cursor: default;
 }
 
+/* Exclusive events: someone else's slot — visible but not paintable. */
+.tg-cell.tg-taken {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(145, 175, 200, 0.18) 0 5px,
+    rgba(145, 175, 200, 0.07) 5px 10px
+  );
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+.tg-paintmode .tg-cell.tg-taken:hover {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(145, 175, 200, 0.18) 0 5px,
+    rgba(145, 175, 200, 0.07) 5px 10px
+  );
+}
+
+/* Exclusive events: the same slot claimed by two people (imported codes). */
+.tg-cell.tg-conflict {
+  background: repeating-linear-gradient(45deg, #ff5d75 0 6px, #b32844 6px 12px);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(60, 0, 12, 0.6);
+}
+
+/* Truncated first name inside claims/taken cells. */
+.tg-cellname {
+  max-width: 100%;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
 /* ---------- heat tooltip, legend, best times ---------- */
 
 .heattip {
@@ -1444,6 +1491,61 @@ select.input {
   grid-area: names;
   color: var(--ink-3);
   font-size: 0.82rem;
+}
+
+/* ---------- per-person breakdown (exclusive / schedule modes) ---------- */
+
+.peoplelist {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.personrow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: rgba(140, 210, 255, 0.05);
+  border: 1px solid var(--glass-line-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+}
+
+.person-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  align-self: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 0 6px rgba(160, 220, 255, 0.25);
+}
+
+.person-name {
+  font-weight: 700;
+}
+
+.person-ranges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--ink-2);
+  font-size: 0.85rem;
+}
+
+.person-range {
+  background: rgba(140, 210, 255, 0.08);
+  border: 1px solid var(--glass-line-soft);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.person-none {
+  color: var(--ink-3);
+  font-style: italic;
 }
 
 /* ---------- copy field, import, misc ---------- */

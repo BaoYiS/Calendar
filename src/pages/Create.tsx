@@ -4,10 +4,11 @@ import MonthPicker from '../components/MonthPicker'
 import TimezoneSelect from '../components/TimezoneSelect'
 import { api, ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
+import { MODE_COPY, MODE_VALUES } from '../lib/modes'
 import { saveEvent } from '../lib/store'
 import { localTimezone, timeLabel } from '../lib/time'
 import { isValidTimezone, offsetBadge, relationToEvent } from '../lib/tz'
-import type { SlotMinutes, StoredEvent } from '../types'
+import type { EventMode, SlotMinutes, StoredEvent } from '../types'
 
 const HALF_HOURS = Array.from({ length: 49 }, (_, i) => i * 30)
 
@@ -22,6 +23,7 @@ function randomId(): string {
 export default function Create() {
   const navigate = useNavigate()
   const { status, user } = useAuth()
+  const [mode, setMode] = useState<EventMode>('overlap')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [dates, setDates] = useState<Set<string>>(new Set())
@@ -77,6 +79,7 @@ export default function Create() {
         const { event } = await api.createEvent({
           name: name.trim(),
           description: description.trim() || undefined,
+          mode,
           dates: [...dates].sort(),
           startMinutes,
           endMinutes,
@@ -99,6 +102,7 @@ export default function Create() {
       id: randomId(),
       name: name.trim(),
       description: description.trim() || undefined,
+      mode,
       dates: [...dates].sort(),
       startMinutes,
       endMinutes,
@@ -125,6 +129,24 @@ export default function Create() {
             link, replies from anywhere.
           </div>
         )}
+
+        <div className="field">
+          <span className="field-label">What kind of event?</span>
+          <div className="segmented segmented-wrap" role="group" aria-label="Event mode">
+            {MODE_VALUES.map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={mode === m}
+                className={`seg${mode === m ? ' seg-on' : ''}`}
+                onClick={() => setMode(m)}
+              >
+                {MODE_COPY[m].label}
+              </button>
+            ))}
+          </div>
+          <p className="fineprint mode-blurb">{MODE_COPY[mode].blurb}</p>
+        </div>
 
         <label className="field">
           <span className="field-label">Event name</span>

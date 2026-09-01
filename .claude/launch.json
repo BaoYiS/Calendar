@@ -6,6 +6,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "aquaplan-dev-5198",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["run", "dev", "--port", "5198", "--strictPort"],
+      "port": 5198
     }
   ]
 }

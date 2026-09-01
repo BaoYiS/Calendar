@@ -1,5 +1,5 @@
 import type { EventDef, ResponseEntry } from '../types'
-import { slotKey, slotRows } from './time'
+import { parseSlotKey, slotKey, slotRows } from './time'
 
 export interface BestRange {
   date: string
@@ -56,4 +56,68 @@ export function bestTimes(def: EventDef, responses: ResponseEntry[], limit = 5):
     return a.startMin - b.startMin
   })
   return ranges.slice(0, limit)
+}
+
+export interface TimeRange {
+  date: string
+  startMin: number
+  endMin: number
+}
+
+export interface PersonSchedule {
+  id: string
+  name: string
+  ranges: TimeRange[]
+}
+
+/**
+ * Each person's chosen slots merged into per-day ranges, in reply order (the
+ * same order the claims grid uses for colours). For the exclusive and
+ * schedule-planning views.
+ */
+export function personSchedules(def: EventDef, responses: ResponseEntry[]): PersonSchedule[] {
+  return responses.map((r) => {
+    const minutes = new Map<string, number[]>()
+    for (const s of r.slots) {
+      const { date, minutes: m } = parseSlotKey(s)
+      const arr = minutes.get(date)
+      if (arr) arr.push(m)
+      else minutes.set(date, [m])
+    }
+    const ranges: TimeRange[] = []
+    for (const date of def.dates) {
+      const mins = minutes.get(date)
+      if (!mins) continue
+      mins.sort((a, b) => a - b)
+      let open: TimeRange | null = null
+      for (const m of mins) {
+        if (open && open.endMin === m) {
+          open.endMin = m + def.slotMinutes
+        } else {
+          if (open) ranges.push(open)
+          open = { date, startMin: m, endMin: m + def.slotMinutes }
+        }
+      }
+      if (open) ranges.push(open)
+    }
+    return { id: r.id, name: r.name, ranges }
+  })
+}
+
+/**
+ * Slots picked by two or more people, as slotKey → names. Empty for a
+ * well-behaved exclusive event; non-empty after e.g. importing clashing
+ * response codes, so the organizer can spot and resolve the clash.
+ */
+export function conflictSlots(responses: ResponseEntry[]): Map<string, string[]> {
+  const bySlot = new Map<string, string[]>()
+  for (const r of responses) {
+    for (const s of r.slots) {
+      const arr = bySlot.get(s)
+      if (arr) arr.push(r.name)
+      else bySlot.set(s, [r.name])
+    }
+  }
+  for (const [k, names] of bySlot) if (names.length < 2) bySlot.delete(k)
+  return bySlot
 }

@@ -1,9 +1,19 @@
 export type SlotMinutes = 15 | 30 | 60
 
+/**
+ * What replies mean and how they combine:
+ * - 'overlap':   find times when everyone is free (mutually available).
+ * - 'exclusive': each slot belongs to at most one person (sign-ups, 1-on-1s).
+ * - 'schedule':  everyone picks times; the organizer plans around the picks.
+ */
+export type EventMode = 'overlap' | 'exclusive' | 'schedule'
+
 export interface EventDef {
   id: string
   name: string
   description?: string
+  /** Missing on events from before modes existed — treat as 'overlap'. */
+  mode?: EventMode
   /** Selected days as 'YYYY-MM-DD', kept sorted. */
   dates: string[]
   /** Daily window, minutes from midnight. start inclusive, end exclusive. */

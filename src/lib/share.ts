@@ -1,4 +1,4 @@
-import type { EventDef, SlotMinutes } from '../types'
+import type { EventDef, EventMode, SlotMinutes } from '../types'
 import { slotKey, slotRows, parseSlotKey, fromDateISO, toDateISO } from './time'
 
 function b64uEncode(s: string): string {
@@ -21,6 +21,8 @@ interface EventWire {
   id: string
   n: string
   d?: string
+  /** Event mode; omitted for 'overlap' (and by pre-mode links). */
+  md?: EventMode
   ds: string[]
   s: number
   e: number
@@ -35,6 +37,7 @@ export function encodeEventDef(def: EventDef): string {
     id: def.id,
     n: def.name,
     ...(def.description ? { d: def.description } : {}),
+    ...(def.mode && def.mode !== 'overlap' ? { md: def.mode } : {}),
     ds: def.dates,
     s: def.startMinutes,
     e: def.endMinutes,
@@ -68,6 +71,7 @@ export function decodeEventDef(encoded: string): EventDef | null {
       id: w.id,
       name: w.n.trim().slice(0, 80),
       description: typeof w.d === 'string' ? w.d.slice(0, 200) : undefined,
+      mode: w.md === 'exclusive' || w.md === 'schedule' ? w.md : 'overlap',
       dates: [...new Set(w.ds)].sort(),
       startMinutes: w.s,
       endMinutes: w.e,

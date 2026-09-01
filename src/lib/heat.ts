@@ -51,3 +51,17 @@ export function heatInk(t: number): string {
 export function heatGradientCSS(): string {
   return `linear-gradient(90deg, ${STOPS.map(([t, [r, g, b]]) => `rgb(${r},${g},${b}) ${t * 100}%`).join(', ')})`
 }
+
+/**
+ * Stable per-person colour for the claims grid (exclusive/schedule modes),
+ * keyed by the reply's index. Golden-angle hue steps keep neighbours distinct
+ * for any headcount; lightness is fixed so the shared dark ink stays readable.
+ */
+export function personColor(index: number): string {
+  const hue = (index * 137.508 + 200) % 360
+  return `hsl(${hue.toFixed(1)}, 70%, 66%)`
+}
+
+/** Ink for text on any personColor() background. */
+export const PERSON_INK = '#06263f'
+

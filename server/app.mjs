@@ -66,11 +66,14 @@ function validDateISO(d) {
   return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === day
 }
 
+const EVENT_MODES = ['overlap', 'exclusive', 'schedule']
+
 /** Same rules the client enforces for share-link payloads. Returns def or null. */
 function sanitizeEventDef(body) {
   if (typeof body !== 'object' || body === null) return null
-  const { name, description, dates, startMinutes, endMinutes, slotMinutes, timezone } = body
+  const { name, description, mode, dates, startMinutes, endMinutes, slotMinutes, timezone } = body
   if (typeof name !== 'string' || name.trim() === '') return null
+  if (mode !== undefined && !EVENT_MODES.includes(mode)) return null
   if (!Array.isArray(dates) || dates.length === 0 || dates.length > 100) return null
   if (!dates.every(validDateISO)) return null
   if (![15, 30, 60].includes(slotMinutes)) return null
@@ -83,6 +86,7 @@ function sanitizeEventDef(body) {
       typeof description === 'string' && description.trim() !== ''
         ? description.trim().slice(0, 200)
         : undefined,
+    mode: mode ?? 'overlap',
     dates: [...new Set(dates)].sort(),
     startMinutes,
     endMinutes,
@@ -119,6 +123,18 @@ function sanitizeName(name) {
   if (typeof name !== 'string') return null
   const n = name.trim().slice(0, 40)
   return n === '' ? null : n
+}
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** 'YYYY-MM-DDTHH:MM' → 'Sep 3, 2:30 PM' (event-local wall clock), for error messages. */
+function slotLabel(slot) {
+  const [date, hm] = slot.split('T')
+  const [, m, d] = date.split('-').map(Number)
+  const [h, min] = hm.split(':').map(Number)
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  const mm = String(min).padStart(2, '0')
+  return `${MONTHS_SHORT[m - 1]} ${d}, ${h12}:${mm} ${h < 12 ? 'AM' : 'PM'}`
 }
 
 /** An IANA zone this Node's ICU accepts, or null. */
@@ -218,6 +234,7 @@ async function eventPayload(ev, user) {
     id: ev._id,
     name: ev.name,
     description: ev.description,
+    mode: ev.mode ?? 'overlap',
     dates: ev.dates,
     startMinutes: ev.startMinutes,
     endMinutes: ev.endMinutes,
@@ -407,6 +424,7 @@ export function createApp() {
       events: mine.map((ev) => ({
         id: ev._id,
         name: ev.name,
+        mode: ev.mode ?? 'overlap',
         dates: ev.dates,
         startMinutes: ev.startMinutes,
         endMinutes: ev.endMinutes,
@@ -528,6 +546,23 @@ export function createApp() {
       let responses = req.user
         ? ev.responses.filter((r) => r.key !== `g:${name.toLowerCase()}`)
         : [...ev.responses]
+      // Mutually-exclusive events: a slot can belong to only one person. The
+      // check runs on the same snapshot the rev-guarded write uses, so a
+      // conflicting reply can never land — the racer gets a 409 after retries.
+      if ((ev.mode ?? 'overlap') === 'exclusive') {
+        const taken = new Set()
+        for (const r of responses) {
+          if (r.key !== key) for (const s of r.slots) taken.add(s)
+        }
+        const clashes = slots.filter((s) => taken.has(s))
+        if (clashes.length > 0) {
+          const shown = clashes.slice(0, 3).map(slotLabel).join('; ')
+          const more = clashes.length > 3 ? ` and ${clashes.length - 3} more` : ''
+          return res.status(409).json({
+            error: `Someone else already claimed ${shown}${more}.`,
+          })
+        }
+      }
       const idx = responses.findIndex((r) => r.key === key)
       if (idx === -1) {
         if (responses.length >= MAX_RESPONSES_PER_EVENT) {
